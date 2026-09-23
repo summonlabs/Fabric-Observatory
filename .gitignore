@@ -1,0 +1,40 @@
+# Build trees
+/build/
+/build-*/
+/out/
+cmake-build-*/
+CMakeUserPresets.json
+
+# Editor and IDE state
+.vs/
+.vscode/
+.idea/
+*.suo
+*.user
+*.VC.db
+*.VC.VC.opendb
+
+# Compiler and linker debris
+*.obj
+*.o
+*.exe
+*.dll
+*.lib
+*.exp
+*.pdb
+*.ilk
+*.idb
+*.gcda
+*.gcno
+
+# Runtime debris
+*.log
+*.tmp
+*.dmp
+*.stackdump
+/tmp/
+/scratch/
+
+# Python tooling must never appear in this repository
+__pycache__/
+*.pyc

@@ -1,0 +1,96 @@
+# Drives the downstream find_package proof end to end:
+#   install the runtime into a staging prefix, configure the consumer against
+#   that prefix only, build it, run it, and require a clean exit.
+#
+# Every step is a separate process, and any failure fails the test.
+
+set(staging "@FABRIC_OBSERVATORY_STAGING_DIR@")
+set(consumer_source "@FABRIC_OBSERVATORY_CONSUMER_SOURCE_DIR@")
+set(consumer_build "@FABRIC_OBSERVATORY_CONSUMER_BUILD_DIR@")
+set(generator "@CMAKE_GENERATOR@")
+set(config "@CMAKE_BUILD_TYPE@")
+set(build_dir "@CMAKE_BINARY_DIR@")
+set(compile_flags "@FABRIC_OBSERVATORY_DOWNSTREAM_COMPILE_FLAGS@")
+set(link_flags "@FABRIC_OBSERVATORY_DOWNSTREAM_LINK_FLAGS@")
+set(asan_dll_dir "@FABRIC_OBSERVATORY_ASAN_DLL_DIR@")
+
+function(run_step label)
+  execute_process(
+    COMMAND ${ARGN}
+    RESULT_VARIABLE result
+    OUTPUT_VARIABLE output
+    ERROR_VARIABLE error)
+  if(NOT result EQUAL 0)
+    message(FATAL_ERROR "downstream step '${label}' failed (${result})\n${output}\n${error}")
+  endif()
+  message(STATUS "downstream step '${label}' ok")
+endfunction()
+
+file(REMOVE_RECURSE "${staging}")
+file(REMOVE_RECURSE "${consumer_build}")
+
+run_step(install
+  "@CMAKE_COMMAND@" --install "${build_dir}" --prefix "${staging}" --config "${config}")
+
+# The consumer is configured with the staging prefix and nothing else: no
+# reference to the runtime source tree or its build tree is passed.
+set(extra_flags "")
+if(NOT "${compile_flags}" STREQUAL "")
+  list(APPEND extra_flags "-DCMAKE_CXX_FLAGS=${compile_flags}")
+  list(APPEND extra_flags "-DCMAKE_EXE_LINKER_FLAGS=${link_flags}")
+endif()
+
+run_step(configure
+  "@CMAKE_COMMAND@"
+  -S "${consumer_source}"
+  -B "${consumer_build}"
+  -G "${generator}"
+  -DCMAKE_BUILD_TYPE=${config}
+  -DCMAKE_PREFIX_PATH=${staging}
+  ${extra_flags})
+
+run_step(build
+  "@CMAKE_COMMAND@" --build "${consumer_build}" --config "${config}")
+
+# A sanitized consumer needs the sanitizer runtime next to it.
+if(NOT "${asan_dll_dir}" STREQUAL "")
+  file(GLOB asan_runtimes "${asan_dll_dir}/clang_rt.asan*dynamic-x86_64.dll")
+  foreach(runtime IN LISTS asan_runtimes)
+    file(COPY "${runtime}" DESTINATION "${consumer_build}")
+  endforeach()
+endif()
+
+set(consumer_exe "${consumer_build}/downstream_consumer@CMAKE_EXECUTABLE_SUFFIX@")
+if(NOT EXISTS "${consumer_exe}")
+  message(FATAL_ERROR "the downstream consumer executable was not produced at ${consumer_exe}")
+endif()
+
+execute_process(
+  COMMAND "${consumer_exe}"
+  RESULT_VARIABLE run_result
+  OUTPUT_VARIABLE run_output
+  ERROR_VARIABLE run_error)
+if(NOT run_result EQUAL 0)
+  message(FATAL_ERROR "the downstream consumer failed (${run_result})\n${run_output}\n${run_error}")
+endif()
+message(STATUS "downstream consumer output:\n${run_output}")
+
+# The installed package must carry the public headers and the exported targets.
+file(GLOB installed_headers "${staging}/include/fabric_observatory/*.hpp")
+list(LENGTH installed_headers header_count)
+if(header_count LESS 20)
+  message(FATAL_ERROR "the installed package carries only ${header_count} public headers")
+endif()
+message(STATUS "downstream: ${header_count} public headers installed")
+
+# ... and the exported package configuration, so a consumer needs nothing but
+# CMAKE_PREFIX_PATH.
+foreach(required
+    "lib/cmake/FabricObservatory/FabricObservatoryConfig.cmake"
+    "lib/cmake/FabricObservatory/FabricObservatoryTargets.cmake"
+    "lib/cmake/FabricObservatory/FabricObservatoryConfigVersion.cmake")
+  if(NOT EXISTS "${staging}/${required}")
+    message(FATAL_ERROR "the installed package is missing ${required}")
+  endif()
+endforeach()
+message(STATUS "downstream: package configuration files installed")
