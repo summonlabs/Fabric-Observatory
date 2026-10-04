@@ -27,7 +27,7 @@ interchangeable:
 | Identity | Kind | Notes |
 |---|---|---|
 | `FabricId`, `SiteId`, `PodId`, `RackId`, `DeviceId`, `SourceId`, `IncarnationId` | 128-bit | derived deterministically from canonical text with SHA-256 and a domain tag |
-| `PortId` | `DeviceId` + index` | a port is only meaningful with respect to its device |
+| `PortId` | `DeviceId` + index | a port is only meaningful with respect to its device |
 | `LinkId` | ordered port pair | stored in canonical order, so a link observed from either end has one identity |
 | `PathId` | hop sequence | content derived: same hops, same path, whoever observed it |
 | `EntityId` / `SubjectIdentity` | canonical 128-bit + typed carrier | one-way derivation, never inverted |
