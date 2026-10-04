@@ -1,6 +1,6 @@
 # Fabric Observatory
 
-A standalone, vendor-neutral **Fabric OS observational runtime**.
+A standalone, vendor-neutral **fabric observational runtime**.
 
 Fabric Observatory owns the *global observational view* of fabric state. It
 consumes provenance-bearing observations from adjacent systems and presents
