@@ -6,7 +6,11 @@
 
 #include "runtime_fixture.hpp"
 
+#include <chrono>
+#include <cstdio>
+#include <fstream>
 #include <string>
+#include <thread>
 #include <vector>
 
 using namespace fabric_observatory;
@@ -272,4 +276,68 @@ FABOBS_TEST(bounds, json_wire_size_is_bounded) {
   const std::string text = builder.build().to_json_text(false);
   Result<Observation> parsed = Observation::from_json_text(text, JsonLimits{}, limits);
   FABOBS_CHECK_EQ(parsed.status().code(), StatusCode::TooLarge);
+}
+
+FABOBS_TEST(bounds, a_rotation_waits_for_a_reader_of_the_active_journal) {
+  TempFile file("bounds-rotation-reader");
+  // Parts an interrupted earlier run left behind would be recovered too.
+  for (int index = 1; index <= 3; ++index) {
+    std::remove(file.part(index).c_str());
+  }
+  JournalOptions options;
+  options.fabric = test_fabric();
+  options.max_bytes = 4096;
+  options.max_record_bytes = 2048;
+  options.max_files = 3;
+  options.fsync_on_append = false;
+  Result<std::unique_ptr<Journal>> opened = Journal::open(file.path(), options);
+  FABOBS_REQUIRE(opened.has_value());
+  Journal& journal = **opened;
+  // Every record has the same encoded size, so the record that rotates the
+  // active journal is known before it is written.
+  const auto record_at = [](std::uint64_t index) {
+    char name[32];
+    std::snprintf(name, sizeof(name), "device-%04llu", static_cast<unsigned long long>(index));
+    ObservationBuilder builder(source_id("rotation"), "rotation/boot-1", index + 1, 1, 1, 1000);
+    builder.claim_text(device_subject(name), "link.state", "up");
+    ObservationRecord record;
+    record.observation = builder.build();
+    record.received_at = TimePoint{1000 + static_cast<std::int64_t>(index)};
+    return record;
+  };
+  std::uint64_t written = 0;
+  const std::uint64_t empty = journal.size_bytes();
+  FABOBS_REQUIRE(journal.append(record_at(written)).has_value());
+  ++written;
+  const std::uint64_t record_bytes = journal.size_bytes() - empty;
+  while (journal.size_bytes() + record_bytes <= options.max_bytes) {
+    FABOBS_REQUIRE(journal.append(record_at(written)).has_value());
+    ++written;
+  }
+  FABOBS_REQUIRE(journal.rotations() == 0);
+  bool reader_opened = false;
+  bool appended = false;
+  {
+    // Another tool reading the journal (an inspection, a scan) holds the active
+    // file open while the next record rotates it, and closes it shortly after.
+    std::ifstream reader(file.path(), std::ios::binary);
+    reader_opened = reader.is_open();
+    const ObservationRecord rotating = record_at(written);
+    std::thread writer([&journal, &rotating, &appended] {
+      appended = journal.append(rotating).has_value();
+    });
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    reader.close();
+    writer.join();
+  }
+  ++written;
+  journal.close();
+  FABOBS_CHECK(reader_opened);
+  FABOBS_CHECK(appended);
+  FABOBS_CHECK_EQ(journal.rotations(), std::uint32_t{1});
+  // The rotated records were moved to a part, not truncated away.
+  Result<std::unique_ptr<Journal>> reopened = Journal::open(file.path(), options);
+  FABOBS_REQUIRE(reopened.has_value());
+  FABOBS_CHECK(!(*reopened)->recovery().corrupt);
+  FABOBS_CHECK_EQ((*reopened)->recovered_records().size(), static_cast<std::size_t>(written));
 }

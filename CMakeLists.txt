@@ -181,7 +181,10 @@ if(FABRIC_OBSERVATORY_DOWNSTREAM_PROOF AND FABRIC_OBSERVATORY_BUILD_TESTS)
   # A sanitized static library can only be linked by a sanitized consumer, so the
   # consumer inherits the sanitizer flags and the sanitizer runtime location.
   if(FABRIC_OBSERVATORY_ENABLE_ASAN AND MSVC)
-    set(FABRIC_OBSERVATORY_DOWNSTREAM_COMPILE_FLAGS "/fsanitize=address")
+    # The flags replace the consumer's CMAKE_CXX_FLAGS, so they carry /EHsc
+    # from the defaults, and /Zi as in the library: without debug information
+    # the consumer's own /WX turns C5072 into an error.
+    set(FABRIC_OBSERVATORY_DOWNSTREAM_COMPILE_FLAGS "/fsanitize=address /Zi /EHsc")
     set(FABRIC_OBSERVATORY_DOWNSTREAM_LINK_FLAGS "/fsanitize=address")
     get_filename_component(FABRIC_OBSERVATORY_ASAN_DLL_DIR "${CMAKE_CXX_COMPILER}" DIRECTORY)
   else()

@@ -57,8 +57,10 @@ endfunction()
 # silently prevents the process from starting at all).
 function(fabric_observatory_enable_asan target)
   if(MSVC)
-    target_compile_options(${target} PRIVATE /fsanitize=address)
-    target_link_options(${target} PRIVATE /fsanitize=address)
+    # Debug information is required: without it MSVC warns C5072 for every
+    # source, which FABRIC_OBSERVATORY_WARNINGS_AS_ERRORS turns into an error.
+    target_compile_options(${target} PRIVATE /fsanitize=address /Zi)
+    target_link_options(${target} PRIVATE /fsanitize=address /INCREMENTAL:NO /DEBUG)
     get_filename_component(_compiler_dir "${CMAKE_CXX_COMPILER}" DIRECTORY)
     set(_runtime_names clang_rt.asan_dynamic-x86_64.dll clang_rt.asan_dbg_dynamic-x86_64.dll)
     foreach(_name IN LISTS _runtime_names)

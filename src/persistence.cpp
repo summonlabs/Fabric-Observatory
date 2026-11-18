@@ -11,8 +11,12 @@
 #include "fabric_observatory/version.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cstring>
+#include <filesystem>
 #include <sstream>
+#include <system_error>
+#include <thread>
 
 #if defined(_WIN32)
 #include <io.h>
@@ -353,28 +357,72 @@ Result<void> Journal::write_record(JournalRecordKind kind, ByteSpan payload) {
   return VoidResult{};
 }
 
+namespace {
+
+// Moves a journal part over the next one, replacing it. While a reader has
+// either file open (an inspection, an antivirus or indexing scan) the move
+// fails on Windows until the reader closes it, so it is retried for a bounded
+// time (about 2 s). A directory in the way is not transient.
+[[nodiscard]] bool move_part(const std::string& from, const std::string& to) {
+  for (int attempt = 0;; ++attempt) {
+    std::error_code error;
+    std::filesystem::rename(from, to, error);
+    if (!error) {
+      return true;
+    }
+#if defined(_WIN32)
+    // ERROR_ACCESS_DENIED, ERROR_SHARING_VIOLATION and ERROR_LOCK_VIOLATION.
+    std::error_code kind;
+    const bool transient = error.category() == std::system_category() &&
+                           (error.value() == 5 || error.value() == 32 || error.value() == 33) &&
+                           !std::filesystem::is_directory(to, kind);
+#else
+    const bool transient = false;
+#endif
+    if (!transient || attempt >= 100) {
+      return false;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+}
+
+}  // namespace
+
 Result<void> Journal::rotate() {
   if (file_ != nullptr) {
     std::fflush(file_);
     std::fclose(file_);
     file_ = nullptr;
   }
-  ++rotations_;
   if (options_.max_files > 1) {
-    // Drop the oldest part, then shift every remaining part up by one and move
-    // the active file into slot one. Rotation is the only place the runtime
-    // deletes persisted bytes, and the bound it enforces is max_files parts.
-    std::remove(part_path(options_.max_files - 1).c_str());
+    // Shift every part up by one, replacing the oldest, and move the active
+    // file into slot one. Rotation is the only place the runtime deletes
+    // persisted bytes, and the bound it enforces is max_files parts. A part
+    // that cannot be moved stops the rotation before anything is lost: the
+    // results were ignored before, so a failed move went on to delete the next
+    // part or to truncate the active file with its records still in it.
     for (std::int64_t index = static_cast<std::int64_t>(options_.max_files) - 2; index >= 1;
          --index) {
       const std::string from = part_path(static_cast<std::uint32_t>(index));
       const std::string to = part_path(static_cast<std::uint32_t>(index + 1));
-      std::remove(to.c_str());
-      std::rename(from.c_str(), to.c_str());
+      std::error_code missing;
+      if (std::filesystem::exists(from, missing) && !move_part(from, to)) {
+        Result<void> reopened = open_file(false);
+        if (!reopened) {
+          return reopened;
+        }
+        return Err(StatusCode::IoError, "cannot rotate the journal: a part could not be moved");
+      }
     }
-    std::remove(part_path(1).c_str());
-    std::rename(path_.c_str(), part_path(1).c_str());
+    if (!move_part(path_, part_path(1))) {
+      Result<void> reopened = open_file(false);
+      if (!reopened) {
+        return reopened;
+      }
+      return Err(StatusCode::IoError, "cannot rotate the journal: the active file could not be moved");
+    }
   }
+  ++rotations_;
   file_ = open_stream(path_.c_str(), "wb+");
   if (file_ == nullptr) {
     return Err(StatusCode::IoError, "cannot create the rotated journal part");
